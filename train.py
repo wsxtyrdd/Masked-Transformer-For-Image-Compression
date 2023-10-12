@@ -217,7 +217,7 @@ def parse_args(argv):
                         help='Path to the dataset')
     parser.add_argument('--num-workers', type=int, default=8,
                         help='Number of workers for dataloader.')
-    parser.add_argument('--training-img-size', type=tuple, default=(256, 256),
+    parser.add_argument('--training-img-size', type=tuple, default=(384, 384),
                         help='Size of the training images.')
     parser.add_argument('--eval-dataset-path', type=str,
                         help='Path to the evaluation dataset')
