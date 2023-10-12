@@ -3,9 +3,6 @@ multi-gpu: False
 test-only: True
 
 batch-size: 12
-#dataset-path: ['/media/Dataset/Flickr/train_images',
-#               '/media/Dataset/HR_Image_dataset/clic2021/train',
-#               '/media/Dataset/HR_Image_dataset/DIV2K_train_HR']
 eval-dataset-path: '/media/Dataset/kodak'
 num-workers: 12
 training-img-size: (384, 384)
