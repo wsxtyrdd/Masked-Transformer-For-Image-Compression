@@ -1,13 +1,11 @@
 import os
 import sys
-from os.path import join
 
 sys.path.append("/media/D/wangsixian/MT")
 
 import configargparse
 import time
 from datetime import datetime
-import math
 import numpy as np
 import random
 import torch
@@ -15,7 +13,6 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
-import shutil
 
 torch.backends.cudnn.benchmark = False
 from data.datasets import get_loader, get_dataset
@@ -42,7 +39,7 @@ def train_one_epoch(epoch, net, train_loader, test_loader, optimizer,
         global_step += 1
         start_time = time.time()
         results = net(input_image)
-        bpp_loss = torch.log(results["likelihoods"]).sum() / (-math.log(2) * num_pixels)
+        bpp_loss = torch.sum(torch.clamp(-torch.log2(results["likelihoods"]), 0, 50)) / num_pixels
         # if config.distortion_metric == "MSE":
         mse_loss = mse_loss_wrapper(results["x_hat"], input_image)
         tot_loss = config.lambda_value * 255 ** 2 * mse_loss + bpp_loss
@@ -153,11 +150,16 @@ def test(net, test_loader, device, logger):
             )
 
             mse_loss = mse_loss_wrapper(results["x_hat"], input_image)
-            bpp_loss = torch.log(results["likelihoods"]).sum() / (-math.log(2) * num_pixels)
+            bpp_loss = torch.sum(torch.clamp(-torch.log2(results["likelihoods"]), 0, 50)) / num_pixels
             tot_loss = config.lambda_value * 255 ** 2 * mse_loss + bpp_loss
             elapsed.update(time.time() - start_time)
             losses.update(tot_loss.item())
             bpps.update(bpp_loss.item())
+
+            # results = net.module.real_inference(input_image_pad)
+            # mse_loss = mse_loss_wrapper(results["x_hat"], input_image)
+            # bpp_loss = results["bpp"]
+            # bpps.update(bpp_loss)
 
             mse_val = mse_loss.item()
             psnr = 10 * (np.log(1. / mse_val) / np.log(10))
@@ -260,7 +262,7 @@ def parse_args(argv):
                         help='Frequency of running validation.')
 
     # model
-    parser.add_argument('--net', type=str, default='MIT3D',
+    parser.add_argument('--net', type=str, default='MT',
                         help='Model architecture.')
     args = parser.parse_args(argv)
     return args
@@ -302,7 +304,7 @@ def main(argv):
     if config.wandb and local_rank == 0:
         print("=============== use wandb ==============")
         wandb_init_kwargs = {
-            'project': 'MT',
+            'project': 'ResiComm',
             'name': exp_name,
             'save_code': True,
             'job_type': job_type,
@@ -310,7 +312,7 @@ def main(argv):
         }
         wandb.init(**wandb_init_kwargs)
 
-        shutil.copy(config.config, join(workdir, 'config.yaml'))
+        # shutil.copy(config.config, join(workdir, 'config.yaml'))
 
     config.logger = logger
     logger.info(config.__dict__)
@@ -337,7 +339,7 @@ def main(argv):
                      }
     optimizer = getattr(torch.optim, config.optimizer_type)(net.parameters(), **optimizer_cfg)
 
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(config.epochs * 0.9), gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(config.epochs * 0.5), gamma=0.1)
 
     global global_step
     global_step = 0

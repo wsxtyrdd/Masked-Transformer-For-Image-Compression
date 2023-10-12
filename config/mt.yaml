@@ -1,0 +1,25 @@
+gpu-id: '0'
+multi-gpu: False
+test-only: True
+
+batch-size: 12
+#dataset-path: ['/media/Dataset/Flickr/train_images',
+#               '/media/Dataset/HR_Image_dataset/clic2021/train',
+#               '/media/Dataset/HR_Image_dataset/DIV2K_train_HR']
+eval-dataset-path: '/media/Dataset/kodak'
+num-workers: 12
+training-img-size: (384, 384)
+
+checkpoint: '/media/D/wangsixian/MT/history/MT/MT 2023-10-12 16:30:30/checkpoint_best_loss.pth.tar'
+init_lr: 1e-4
+min_lr: 1e-4
+max_lr: 1e-4
+
+
+epochs: 10
+warmup: False
+print-every: 100
+test-every: 2500
+distortion_metric: 'MSE'
+lambda_value: 0.0035
+#beta_value: 0

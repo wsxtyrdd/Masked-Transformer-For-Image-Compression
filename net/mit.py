@@ -17,7 +17,7 @@ from net.elic import ELICAnalysis, ELICSynthesis
 class GaussianMixtureEntropyModel(nn.Module):
     def __init__(
             self,
-            minmax: int = 32
+            minmax: int = 64
     ):
         super().__init__()
         self.minmax = minmax
@@ -26,22 +26,40 @@ class GaussianMixtureEntropyModel(nn.Module):
         self.pmf_laplace = self.laplace.cdf(self.samples + 0.5) - self.laplace.cdf(self.samples - 0.5)
         self.gaussian_conditional = GaussianConditional(None)
 
-    def get_GMM_likelihood(self, latent_hat, params):
-        B, C, H, W = latent_hat.size()
-        probs, mean, scale = params.chunk(3, dim=1)
-        scale = abs(scale).reshape(B, 3, C, H, W)  # B 3C H W
-        probs = torch.softmax(probs.reshape(B, 3, C, H, W), dim=1)  # B 3C H W
-        mean = mean.reshape(B, 3, C, H, W)  # B 3C H W
-        likelihoods_0 = self.gaussian_conditional._likelihood(latent_hat, scale[:, 0], means=mean[:, 0])
-        likelihoods_1 = self.gaussian_conditional._likelihood(latent_hat, scale[:, 1], means=mean[:, 1])
-        likelihoods_2 = self.gaussian_conditional._likelihood(latent_hat, scale[:, 2], means=mean[:, 2])
+    def update_minmax(self, minmax):
+        self.minmax = minmax
+        self.samples = torch.arange(-minmax, minmax + 1, 1, dtype=torch.float32).cuda()
+        self.pmf_laplace = self.laplace.cdf(self.samples + 0.5) - self.laplace.cdf(self.samples - 0.5)
 
-        likelihoods_0 = self.gaussian_conditional.likelihood_lower_bound(likelihoods_0)
-        likelihoods_1 = self.gaussian_conditional.likelihood_lower_bound(likelihoods_1)
-        likelihoods_2 = self.gaussian_conditional.likelihood_lower_bound(likelihoods_2)
+    def get_GMM_likelihood(self, latent_hat, probs, means, scales):
+        # if self.training:
+        #     half = float(0.5)
+        #     noise = torch.empty_like(latent).uniform_(-half, half)
+        #     latent_hat = latent + noise
+        # else:
+        #     latent_hat = torch.round(latent)
 
-        likelihoods = 0.999 * (probs[:, 0] * likelihoods_0 + probs[:, 1] * likelihoods_1 + probs[:, 2] * likelihoods_2)
+        # _, likelihoods_0 = self.gaussian_conditional(latent_hat, scales[0], means=means[0], training=False)
+        # _, likelihoods_1 = self.gaussian_conditional(latent_hat, scales[1], means=means[1], training=False)
+        # _, likelihoods_2 = self.gaussian_conditional(latent_hat, scales[2], means=means[2], training=False)
+
+        gaussian1 = torch.distributions.Normal(means[0], scales[0])
+        gaussian2 = torch.distributions.Normal(means[1], scales[1])
+        gaussian3 = torch.distributions.Normal(means[2], scales[2])
+        likelihoods_0 = gaussian1.cdf(latent_hat + 0.5) - gaussian1.cdf(latent_hat - 0.5)
+        likelihoods_1 = gaussian2.cdf(latent_hat + 0.5) - gaussian2.cdf(latent_hat - 0.5)
+        likelihoods_2 = gaussian3.cdf(latent_hat + 0.5) - gaussian3.cdf(latent_hat - 0.5)
+
+        likelihoods = 0.999 * (probs[0] * likelihoods_0 + probs[1] * likelihoods_1 + probs[2] * likelihoods_2)
         + 0.001 * (self.laplace.cdf(latent_hat + 0.5) - self.laplace.cdf(latent_hat - 0.5))
+        likelihoods = likelihoods + 1e-10
+
+        # print(likelihoods.min(), likelihoods.max())
+        # _, likelihoods_0 = self.gaussian_conditional(latent, scale[:, 0], means=mean[:, 0], training=False)
+        # _, likelihoods_1 = self.gaussian_conditional(latent, scale[:, 1], means=mean[:, 1], training=False)
+        # _, likelihoods_2 = self.gaussian_conditional(latent, scale[:, 2], means=mean[:, 2], training=False)
+        # likelihoods = 0.999 * (probs[:, 0] * likelihoods_0 + probs[:, 1] * likelihoods_1 + probs[:, 2] * likelihoods_2)
+        # + 0.001 * (self.laplace.cdf(quantize_ste(latent) + 0.5) - self.laplace.cdf(quantize_ste(latent) - 0.5))
         return likelihoods
 
     def get_GMM_pmf(self, probs, means, scales):
@@ -68,6 +86,7 @@ class GaussianMixtureEntropyModel(nn.Module):
         likelihoods_2 = self.gaussian_conditional._likelihood(samples, scales[2], means=means[2])
         pmf_clip = (0.999 * (probs[0] * likelihoods_0 + probs[1] * likelihoods_1 + probs[2] * likelihoods_2)
                     + 0.001 * self.pmf_laplace)
+        # pmf_clip = pmf_clip.clamp(1e-5, 1.) / pmf_clip.sum(dim=1, keepdim=True)
         # print("GMM pmf", pmf_clip[21, 33])
         return pmf_clip
 
@@ -94,6 +113,7 @@ class GaussianMixtureEntropyModel(nn.Module):
         symbols = (symbols + self.minmax).cpu().numpy().astype(np.int32)
         # print(symbols.shape, probabilities.shape)
         encoder = constriction.stream.queue.RangeEncoder()
+        # print(symbols.max(), symbols.min())
         encoder.encode(symbols, model_family, probabilities)
         compressed = encoder.get_compressed()
         # print(encoder.num_bits() / 512 / 768)
@@ -213,10 +233,17 @@ class MaskedImageTransformer(nn.Module):
             x_masked = blk(x_masked, input_resolution, slice_size)
         x_out = x_masked.transpose(1, 2).reshape(B, self.dim, H, W)
         params = self.entropy_parameters(x_out)
-        return params
+        probs, means, scales = params.chunk(3, dim=1)
+        probs = torch.softmax(probs.reshape(B, 3, C, H, W), dim=1).transpose(0, 1)
+        means = means.reshape(B, 3, C, H, W).transpose(0, 1)
+        scales = torch.abs(scales).reshape(B, 3, C, H, W).transpose(0, 1).clamp(1e-10, 1e10)
+        return probs, means, scales
 
     def forward_with_random_mask(self, latent):
         B, C, H, W = latent.size()
+        half = float(0.5)
+        noise = torch.empty_like(latent).uniform_(-half, half)
+        latent_noise = latent + noise
         latent_hat = quantize_ste(latent)
 
         def generate_random_mask(latent, r):
@@ -229,35 +256,43 @@ class MaskedImageTransformer(nn.Module):
         # r = math.floor(0.99 * H * W)
         r = math.floor(np.random.uniform(0.05, 0.99) * H * W)  # drop probability
         mask = generate_random_mask(latent_hat, r)
-        # print(mask.sum(), mask.shape)  1=keep 0=drop
-        params = self.forward_with_given_mask(latent_hat, mask)
-        likelihoods = self.gmm_model.get_GMM_likelihood(latent_hat, params)
-        likelihoods_masked = torch.where(mask == 1., torch.ones_like(likelihoods), likelihoods)
+        mask_params = mask.unsqueeze(0).repeat(3, 1, 1, 1, 1)
+        probs, means, scales = self.forward_with_given_mask(latent_hat, mask)
+        likelihoods_masked = torch.ones_like(latent_hat)
+        # print(means[mask_params == 0].max(), scales[mask_params == 0].max())
+        likelihoods = self.gmm_model.get_GMM_likelihood(latent_noise[mask == 0],
+                                                        probs[mask_params == 0].reshape(3, -1),
+                                                        means[mask_params == 0].reshape(3, -1),
+                                                        scales[mask_params == 0].reshape(3, -1))
+        likelihoods_masked[mask == 0] = likelihoods
         return latent_hat, likelihoods_masked
 
-    @torch.no_grad()
-    def inference(self, latent, context_mode='qlds', slice_size=None):
-        # B, C, H, W = latent.size()
-        latent_hat = quantize_ste(latent)
-        coding_order = get_coding_order(latent.shape, context_mode, latent_hat.get_device(), step=12)  # H W
-        coding_order = coding_order.reshape(1, 1, *coding_order.shape).repeat(latent.shape[0], latent.shape[1], 1, 1)
+    def inference(self, latent_hat, context_mode='qlds', slice_size=None):
+        coding_order = get_coding_order(latent_hat.shape, context_mode, latent_hat.get_device(), step=12)  # H W
+        coding_order = coding_order.reshape(1, 1, *coding_order.shape).repeat(latent_hat.shape[0], latent_hat.shape[1], 1, 1)
         total_steps = int(coding_order.max() + 1)
         likelihoods = torch.zeros_like(latent_hat)
         for i in range(total_steps):
             ctx_locations = (coding_order < i)
-            encoding_locations = (coding_order == i)
             # params_locations = encoding_locations.repeat(1, 3, 1, 1).reshape(B, 3, C, H, W)
-            mask_i = torch.where(ctx_locations, torch.ones_like(latent), torch.zeros_like(latent))
-            params_i = self.forward_with_given_mask(latent_hat, mask_i, slice_size)
-            likelihoods_i = self.gmm_model.get_GMM_likelihood(latent_hat, params_i)
-            likelihoods[encoding_locations] = likelihoods_i[encoding_locations]
+            mask_i = torch.where(ctx_locations, torch.ones_like(latent_hat), torch.zeros_like(latent_hat))
+            probs_i, means_i, scales_i = self.forward_with_given_mask(latent_hat, mask_i, slice_size)
+            # print(means_i.max(), means_i.min(), scales_i.max(), scales_i.min())
+            encoding_locations = (coding_order == i)
+            mask_params_i = encoding_locations.unsqueeze(0).repeat(3, 1, 1, 1, 1)
+            likelihoods_i = self.gmm_model.get_GMM_likelihood(latent_hat[encoding_locations],
+                                                              probs_i[mask_params_i].reshape(3, -1),
+                                                              means_i[mask_params_i].reshape(3, -1),
+                                                              scales_i[mask_params_i].reshape(3, -1))
+            likelihoods[encoding_locations] = likelihoods_i
             # print(-torch.log2(likelihoods_i[encoding_locations]).sum().item() / 512 / 768)
             # print(likelihoods_i[encoding_locations][21])
-        return latent_hat, likelihoods
+        return likelihoods
 
     def compress(self, latent, context_mode='qlds'):
         B, C, H, W = latent.size()
         latent_hat = torch.round(latent)
+        self.gmm_model.update_minmax(int(latent_hat.max().item()))
         coding_order = get_coding_order(latent.shape, context_mode, latent_hat.get_device(), step=12)  # H W
         coding_order = coding_order.reshape(1, 1, *coding_order.shape).repeat(latent.shape[0], latent.shape[1], 1, 1)
         total_steps = int(coding_order.max() + 1)
@@ -267,18 +302,15 @@ class MaskedImageTransformer(nn.Module):
             # print('STEP', i)
             ctx_locations = (coding_order < i)
             encoding_locations = (coding_order == i)
+            mask_params_i = encoding_locations.unsqueeze(0).repeat(3, 1, 1, 1, 1)
             # print(encoding_locations.sum())
-            params_locations = encoding_locations.repeat(1, 3, 1, 1).reshape(B, 3, C, H, W)
+            # params_locations = encoding_locations.repeat(1, 3, 1, 1).reshape(B, 3, C, H, W)
             mask_i = torch.where(ctx_locations, torch.ones_like(latent), torch.zeros_like(latent))
-
-            params_i = self.forward_with_given_mask(latent_hat, mask_i)
-
-            probs, mean, scale = params_i.chunk(3, dim=1)
-            scales_i = abs(scale).reshape(B, 3, C, H, W)[params_locations].reshape(3, -1)  # B 3C H W
-            probs_i = torch.softmax(probs.reshape(B, 3, C, H, W), dim=1)[params_locations].reshape(3, -1)  # B 3C H W
-            means_i = mean.reshape(B, 3, C, H, W)[params_locations].reshape(3, -1)  # B 3C H W
-
-            string_i = self.gmm_model.compress(latent_hat[encoding_locations], probs_i, means_i, scales_i)
+            probs_i, means_i, scales_i = self.forward_with_given_mask(latent_hat, mask_i)
+            string_i = self.gmm_model.compress(latent_hat[encoding_locations],
+                                               probs_i[mask_params_i].reshape(3, -1),
+                                               means_i[mask_params_i].reshape(3, -1),
+                                               scales_i[mask_params_i].reshape(3, -1))
             strings.append(string_i)
         print('compress', time.time() - t0)
         return strings
@@ -293,14 +325,13 @@ class MaskedImageTransformer(nn.Module):
         for i in range(total_steps):
             ctx_locations = (coding_order < i)
             encoding_locations = (coding_order == i)
-            params_locations = encoding_locations.repeat(1, 3, 1, 1).reshape(B, 3, C, H, W)
+            mask_params_i = encoding_locations.unsqueeze(0).repeat(3, 1, 1, 1, 1)
             mask_i = torch.where(ctx_locations, torch.ones_like(latent_hat), torch.zeros_like(latent_hat))
-            params_i = self.forward_with_given_mask(latent_hat, mask_i)
-            probs, mean, scale = params_i.chunk(3, dim=1)
-            scales_i = abs(scale).reshape(B, 3, C, H, W)[params_locations].reshape(3, -1)  # B 3C H W
-            probs_i = torch.softmax(probs.reshape(B, 3, C, H, W), dim=1)[params_locations].reshape(3, -1)  # B 3C H W
-            means_i = mean.reshape(B, 3, C, H, W)[params_locations].reshape(3, -1)  # B 3C H W
-            symbols_i = self.gmm_model.decompress(strings[i], probs_i, means_i, scales_i)
+            probs_i, means_i, scales_i = self.forward_with_given_mask(latent_hat, mask_i)
+            symbols_i = self.gmm_model.decompress(strings[i],
+                                                  probs_i[mask_params_i].reshape(3, -1),
+                                                  means_i[mask_params_i].reshape(3, -1),
+                                                  scales_i[mask_params_i].reshape(3, -1))
             latent_hat[encoding_locations] = symbols_i
         print('decompress', time.time() - t0)
         return latent_hat
@@ -329,7 +360,8 @@ class MaskedImageModelingTransformer(nn.Module):
 
     def inference(self, x):
         y = self.g_a(x)
-        y_hat, likelihoods = self.mim.inference(y)
+        y_hat = torch.round(y)
+        likelihoods = self.mim.inference(y_hat)
         x_hat = self.g_s(y_hat)
         return {
             "x_hat": x_hat,
@@ -350,7 +382,7 @@ class MaskedImageModelingTransformer(nn.Module):
 
 
 if __name__ == '__main__':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '7'
     from PIL import Image
 
 
@@ -367,7 +399,7 @@ if __name__ == '__main__':
     model = MaskedImageModelingTransformer().cuda()
     model = nn.DataParallel(model)
     state_dict = torch.load(
-        r'/media/D/wangsixian/ResiComm/history/MIT/MIT 2023-08-21 11:47:54/checkpoint_best_loss.pth.tar')['state_dict']
+        r'/media/D/wangsixian/ResiComm/history/MIT/MIT 2023-09-03 14:37:48/checkpoint_best_loss.pth.tar')['state_dict']
     result_dict = {}
     for key, weight in state_dict.items():
         result_key = key
@@ -376,6 +408,8 @@ if __name__ == '__main__':
     model.load_state_dict(result_dict, strict=False)
     model.eval()
     with torch.no_grad():
+        results = model.module.forward(x[:, :, :384, :384])
+
         results = model.module.inference(x)
         psnr = 10 * torch.log10(1 / torch.mean((x - results['x_hat']) ** 2)).item()
         bpp = -torch.sum(torch.log2(results['likelihoods'])).item() / (x.size(2) * x.size(3))
