@@ -1,4 +1,4 @@
-This repo is an implementation for [M2T: Masking Transformers Twice for Faster Decoding](https://openaccess.thecvf.com/content/ICCV2023/html/Mentzer_M2T_Masking_Transformers_Twice_for_Faster_Decoding_ICCV_2023_paper.html) in **pytorch**.
+This repo is an implementation of MT models in [M2T: Masking Transformers Twice for Faster Decoding](https://openaccess.thecvf.com/content/ICCV2023/html/Mentzer_M2T_Masking_Transformers_Twice_for_Faster_Decoding_ICCV_2023_paper.html) in **pytorch**.
 
 ## Install
 
@@ -16,7 +16,13 @@ Model checkpoints and logs will be saved in `./history/MT`.
 python train.py --config config/mt.yaml --test-only --eval-dataset-path: 'path_to_kodak'
 ```
 ### Performance
-Todo
+Red dot is our reproduction with distortion lambda $\lambda=0.0035$.
+<p align='center'>
+    <img src="results/mt_rd.png" width="500" center>
+</p>
 
 ### Pretrained models
 To be released.
+
+### Acknowledgements
+We use constriction for actual entropy coding. Thanks for Fabian Mentzer's help for the clarification of the details of the paper.
