@@ -322,6 +322,7 @@ class MaskedImageModelingTransformer(nn.Module):
         }
 
     def inference(self, x):
+        # TODO Patch-wise inference for off-the-shelf Transformers
         y = self.g_a(x)
         y_hat = torch.round(y)
         likelihoods = self.mim.inference(y_hat)
@@ -342,44 +343,3 @@ class MaskedImageModelingTransformer(nn.Module):
             "x_hat": x_hat,
             "bpp": bpp,
         }
-
-
-# if __name__ == '__main__':
-#     os.environ['CUDA_VISIBLE_DEVICES'] = '7'
-#     from PIL import Image
-#
-#
-#     def read_image_to_torch(path):
-#         input_image = Image.open(path).convert('RGB')
-#         input_image = np.asarray(input_image).astype('float64').transpose(2, 0, 1)
-#         input_image = torch.from_numpy(input_image).type(torch.FloatTensor)
-#         input_image = input_image.unsqueeze(0) / 255
-#         return input_image
-#
-#
-#     x = read_image_to_torch('/media/Dataset/kodak/kodim04.png').cuda()
-#     # print(get_coding_order((1, 1, 4, 24, 24), 'qlds3d', 'cpu', step=12))
-#     model = MaskedImageModelingTransformer().cuda()
-#     model = nn.DataParallel(model)
-#     state_dict = torch.load(
-#         r'/media/D/wangsixian/ResiComm/history/MIT/MIT 2023-09-03 14:37:48/checkpoint_best_loss.pth.tar')['state_dict']
-#     result_dict = {}
-#     for key, weight in state_dict.items():
-#         result_key = key
-#         if 'attn_mask' not in key:
-#             result_dict[result_key] = weight
-#     model.load_state_dict(result_dict, strict=False)
-#     model.eval()
-#     with torch.no_grad():
-#         results = model.module.forward(x[:, :, :384, :384])
-#
-#         results = model.module.inference(x)
-#         psnr = 10 * torch.log10(1 / torch.mean((x - results['x_hat']) ** 2)).item()
-#         bpp = -torch.sum(torch.log2(results['likelihoods'])).item() / (x.size(2) * x.size(3))
-#         print(psnr, bpp)
-#
-#         results = model.module.real_inference(x)
-#         x_hat = results['x_hat']
-#         psnr = 10 * torch.log10(1 / torch.mean((x - x_hat) ** 2)).item()
-#         print(psnr)
-#         print(results['bpp'])
